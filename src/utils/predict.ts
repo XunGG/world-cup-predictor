@@ -1,144 +1,166 @@
-import type { Ratings } from '../data/teams'
+import type { Team } from '../types/team'
+import type { PredictedScore, PredictionResult } from '../types/prediction'
 
-export interface PredictionInput {
-  nameA: string
-  nameB: string
-  ratingsA: Ratings
-  ratingsB: Ratings
+// 东道主（美/加/墨）享有主场加成。
+const HOST_CODES = ['USA', 'CAN', 'MEX']
+const HOME_ADVANTAGE = 0.15
+const BASE_GOALS = 1.25
+const MAX_GOALS = 5 // 比分矩阵 0..5
+const MIN_XG = 0.2
+const MAX_XG = 3.2
+
+/** 综合战力：六项加权求和。 */
+export function teamStrength(t: Team): number {
+  return (
+    t.overall * 0.35 +
+    t.attack * 0.2 +
+    t.defense * 0.2 +
+    t.form * 0.15 +
+    t.worldCupExperience * 0.05 +
+    t.consistency * 0.05
+  )
 }
 
-export interface PredictionResult {
-  winA: number // % chance Team A wins
-  draw: number // % chance of a draw
-  winB: number // % chance Team B wins
-  scoreA: number // recommended scoreline for A
-  scoreB: number // recommended scoreline for B
-  explanation: string
+function clampXg(x: number): number {
+  return Math.min(MAX_XG, Math.max(MIN_XG, x))
+}
+
+function round2(x: number): number {
+  return Math.round(x * 100) / 100
+}
+
+function factorial(n: number): number {
+  let r = 1
+  for (let i = 2; i <= n; i++) r *= i
+  return r
+}
+
+/** 泊松分布：P(k; λ) = λ^k * e^(-λ) / k! */
+export function poissonProbability(lambda: number, goals: number): number {
+  return (Math.pow(lambda, goals) * Math.exp(-lambda)) / factorial(goals)
+}
+
+/** 计算某队对阵某队的预期进球（已做上下限裁剪并保留两位小数）。 */
+export function expectedGoals(scorer: Team, opponent: Team): number {
+  const homeAdv = HOST_CODES.includes(scorer.code) ? HOME_ADVANTAGE : 0
+  const xg =
+    BASE_GOALS +
+    (scorer.attack - 75) * 0.025 -
+    (opponent.defense - 75) * 0.018 +
+    (scorer.form - 75) * 0.012 +
+    homeAdv
+  return round2(clampXg(xg))
 }
 
 /**
- * Combine the four sub-ratings into a single "strength" number.
- * Weights: overall and form matter a bit more than raw attack/defense.
+ * 主预测函数：预期进球 + 泊松分布 + 比分矩阵汇总。
+ * teamA / teamB 应已合并用户在界面上调整过的评分。
  */
-function strength(r: Ratings): number {
-  return r.overall * 0.4 + r.attack * 0.2 + r.defense * 0.2 + r.form * 0.2
-}
+export function predictMatch(teamA: Team, teamB: Team): PredictionResult {
+  const egA = expectedGoals(teamA, teamB)
+  const egB = expectedGoals(teamB, teamA)
 
-/** Logistic function — maps a rating difference to a 0..1 probability. */
-function logistic(x: number, scale: number): number {
-  return 1 / (1 + Math.exp(-x / scale))
-}
-
-function clampRound(n: number): number {
-  return Math.max(0, Math.round(n))
-}
-
-export function predict(input: PredictionInput): PredictionResult {
-  const { nameA, nameB, ratingsA, ratingsB } = input
-
-  const sA = strength(ratingsA)
-  const sB = strength(ratingsB)
-  const diff = sA - sB // positive => A stronger
-
-  // Probability that A beats B (ignoring draws), via logistic curve.
-  const pAwin = logistic(diff, 6)
-
-  // Draw probability: highest when the two sides are evenly matched,
-  // and shrinks as the gap widens.
-  const drawBase = 0.27
-  const draw = drawBase * Math.exp(-Math.abs(diff) / 14)
-
-  // Split the remaining probability between A and B in proportion to pAwin.
-  const remaining = 1 - draw
-  const winA = remaining * pAwin
-
-  // Convert to rounded percentages that always sum to 100.
-  let pctA = Math.round(winA * 100)
-  let pctDraw = Math.round(draw * 100)
-  let pctB = 100 - pctA - pctDraw
-
-  // Guard against rounding pushing a value negative.
-  if (pctB < 0) {
-    pctDraw += pctB
-    pctB = 0
+  // 构建 0..5 比分概率矩阵
+  const cells: PredictedScore[] = []
+  let total = 0
+  for (let a = 0; a <= MAX_GOALS; a++) {
+    for (let b = 0; b <= MAX_GOALS; b++) {
+      const p = poissonProbability(egA, a) * poissonProbability(egB, b)
+      cells.push({ scoreA: a, scoreB: b, probability: p })
+      total += p
+    }
   }
 
-  // Recommended scoreline — driven by attacking strength vs opposing defense.
-  const expectedGoalsA = 1.1 + (ratingsA.attack - ratingsB.defense) / 28 + diff / 40
-  const expectedGoalsB = 1.1 + (ratingsB.attack - ratingsA.defense) / 28 - diff / 40
-  let scoreA = clampRound(expectedGoalsA)
-  let scoreB = clampRound(expectedGoalsB)
-
-  // Make the recommended score agree with the most likely outcome.
-  const favored = pctA > pctB ? 'A' : pctB > pctA ? 'B' : 'draw'
-  if (favored === 'A' && scoreA <= scoreB) scoreA = scoreB + 1
-  if (favored === 'B' && scoreB <= scoreA) scoreB = scoreA + 1
-  if (favored === 'draw' && scoreA !== scoreB) {
-    const avg = Math.round((scoreA + scoreB) / 2)
-    scoreA = avg
-    scoreB = avg
+  // 归一化，并汇总胜平负
+  let rawA = 0
+  let rawDraw = 0
+  let rawB = 0
+  for (const c of cells) {
+    c.probability /= total
+    if (c.scoreA > c.scoreB) rawA += c.probability
+    else if (c.scoreA === c.scoreB) rawDraw += c.probability
+    else rawB += c.probability
   }
 
-  const explanation = buildExplanation({
-    nameA,
-    nameB,
-    pctA,
-    pctB,
-    pctDraw,
-    diff,
-    ratingsA,
-    ratingsB,
+  // 转为合计 100 的整数百分比
+  let teamAWinProbability = Math.round(rawA * 100)
+  let drawProbability = Math.round(rawDraw * 100)
+  let teamBWinProbability = 100 - teamAWinProbability - drawProbability
+  if (teamBWinProbability < 0) {
+    drawProbability += teamBWinProbability
+    teamBWinProbability = 0
+  }
+
+  // Top 3 最可能比分（概率转百分比整数）
+  const topScores: PredictedScore[] = cells
+    .slice()
+    .sort((x, y) => y.probability - x.probability)
+    .slice(0, 3)
+    .map((c) => ({
+      scoreA: c.scoreA,
+      scoreB: c.scoreB,
+      probability: Math.round(c.probability * 100),
+    }))
+
+  // 可信度：综合战力差距
+  const diff = Math.abs(teamStrength(teamA) - teamStrength(teamB))
+  const confidence: PredictionResult['confidence'] = diff < 5 ? '低' : diff <= 10 ? '中' : '高'
+
+  const analysis = buildAnalysis({
+    nameA: teamA.nameZh,
+    nameB: teamB.nameZh,
+    teamAWinProbability,
+    drawProbability,
+    teamBWinProbability,
+    egA,
+    egB,
+    confidence,
   })
 
   return {
-    winA: pctA,
-    draw: pctDraw,
-    winB: pctB,
-    scoreA,
-    scoreB,
-    explanation,
+    teamAWinProbability,
+    drawProbability,
+    teamBWinProbability,
+    expectedGoalsA: egA,
+    expectedGoalsB: egB,
+    topScores,
+    confidence,
+    analysis,
   }
 }
 
-function buildExplanation(args: {
+function buildAnalysis(args: {
   nameA: string
   nameB: string
-  pctA: number
-  pctB: number
-  pctDraw: number
-  diff: number
-  ratingsA: Ratings
-  ratingsB: Ratings
+  teamAWinProbability: number
+  drawProbability: number
+  teamBWinProbability: number
+  egA: number
+  egB: number
+  confidence: '低' | '中' | '高'
 }): string {
-  const { nameA, nameB, pctA, pctB, pctDraw, diff, ratingsA, ratingsB } = args
+  const { nameA, nameB, teamAWinProbability, drawProbability, teamBWinProbability, egA, egB, confidence } =
+    args
 
-  const favorite = pctA > pctB ? nameA : pctB > pctA ? nameB : null
-  const gap = Math.abs(diff)
+  const favored =
+    teamAWinProbability > teamBWinProbability
+      ? nameA
+      : teamBWinProbability > teamAWinProbability
+        ? nameB
+        : null
 
-  let strengthPhrase: string
-  if (gap < 2) strengthPhrase = 'an extremely tight, hard-to-call contest'
-  else if (gap < 5) strengthPhrase = 'a closely matched encounter with a slight edge'
-  else if (gap < 10) strengthPhrase = 'a clear favourite but room for a surprise'
-  else strengthPhrase = 'a strong mismatch on paper'
-
-  // Highlight a notable individual strength.
-  const edges: string[] = []
-  if (ratingsA.attack - ratingsB.defense >= 6)
-    edges.push(`${nameA}'s attack should test ${nameB}'s back line`)
-  if (ratingsB.attack - ratingsA.defense >= 6)
-    edges.push(`${nameB}'s forwards look dangerous against ${nameA}`)
-  if (Math.abs(ratingsA.form - ratingsB.form) >= 6)
-    edges.push(
-      ratingsA.form > ratingsB.form
-        ? `${nameA} carries the better recent form`
-        : `${nameB} carries the better recent form`,
-    )
-
-  const edgeSentence = edges.length ? ` ${edges[0]}.` : ''
-
-  if (!favorite) {
-    return `This looks like ${strengthPhrase}. With win chances almost level (${pctA}% vs ${pctB}%, draw ${pctDraw}%), a single moment of quality could decide it.${edgeSentence}`
+  let tendency: string
+  if (confidence === '低') {
+    tendency = '双方实力较为接近，模型认为比赛存在较高不确定性，平局和小比分结果都有可能出现。'
+  } else if (confidence === '中') {
+    tendency = '一方略占上风，但仍有爆冷空间，胜负可能取决于临场发挥与把握机会的效率。'
+  } else {
+    tendency = '纸面实力差距较为明显，不过足球比赛中意外时有发生，结果仍需以实际比赛为准。'
   }
 
-  return `${favorite} are favoured in what shapes up as ${strengthPhrase}. The model gives ${nameA} ${pctA}%, a draw ${pctDraw}%, and ${nameB} ${pctB}%.${edgeSentence}`
+  const lead = favored ? `${favored}相对更被看好。` : '双方旗鼓相当，胜负难料。'
+  const xg = `预期进球约为 ${nameA} ${egA.toFixed(2)}、${nameB} ${egB.toFixed(2)}。`
+  const probs = `模型胜平负概率：${nameA} ${teamAWinProbability}%、平局 ${drawProbability}%、${nameB} ${teamBWinProbability}%。`
+
+  return `${lead}${xg}${probs}${tendency}`
 }

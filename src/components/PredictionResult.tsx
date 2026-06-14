@@ -1,86 +1,81 @@
-import type { PredictionResult as Result } from '../utils/predict'
+import type { Team } from '../types/team'
+import type { PredictionResult as Result } from '../types/prediction'
+import { ProbabilityBar, ExpectedGoals, TopScores, ConfidenceBadge } from './PredictionParts'
 
 interface PredictionResultProps {
-  result: Result
-  nameA: string
-  nameB: string
-  flagA: string
-  flagB: string
+  teamA: Team
+  teamB: Team
+  prediction: Result
+  isCustom: boolean // 是否为不在赛程中的自定义对阵
 }
 
 export default function PredictionResult({
-  result,
-  nameA,
-  nameB,
-  flagA,
-  flagB,
+  teamA,
+  teamB,
+  prediction,
+  isCustom,
 }: PredictionResultProps) {
-  const { winA, draw, winB, scoreA, scoreB, explanation } = result
+  const { nameZh: nameA, flag: flagA } = teamA
+  const { nameZh: nameB, flag: flagB } = teamB
 
   return (
-    <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur">
-      {/* Recommended scoreline */}
-      <div className="mb-6 text-center">
-        <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
-          Recommended Score
+    <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl backdrop-blur sm:p-6">
+      {/* 标题 */}
+      <div className="mb-5 text-center">
+        <p className="text-xs font-semibold uppercase tracking-widest text-gold">预测结果</p>
+        <h2 className="mt-1 text-xl font-bold sm:text-2xl">
+          {flagA} {nameA} <span className="text-slate-500">vs</span> {nameB} {flagB}
+        </h2>
+      </div>
+
+      {isCustom && (
+        <p className="mb-5 rounded-xl bg-amber-500/15 px-4 py-2.5 text-center text-sm text-amber-200">
+          该对阵不在当前赛程数据中，以下为模拟预测。
         </p>
-        <div className="mt-2 flex items-center justify-center gap-4 text-4xl font-extrabold">
-          <span className="flex items-center gap-2">
-            <span aria-hidden>{flagA}</span>
-            <span className="text-sky-300 tabular-nums">{scoreA}</span>
-          </span>
-          <span className="text-slate-500">:</span>
-          <span className="flex items-center gap-2">
-            <span className="text-rose-300 tabular-nums">{scoreB}</span>
-            <span aria-hidden>{flagB}</span>
-          </span>
-        </div>
+      )}
+
+      {/* 胜平负 */}
+      <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        胜平负概率
+      </p>
+      <ProbabilityBar
+        nameA={nameA}
+        nameB={nameB}
+        a={prediction.teamAWinProbability}
+        draw={prediction.drawProbability}
+        b={prediction.teamBWinProbability}
+      />
+
+      {/* 预期进球 */}
+      <p className="mb-2 mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        预期进球
+      </p>
+      <ExpectedGoals
+        nameA={nameA}
+        nameB={nameB}
+        flagA={flagA}
+        flagB={flagB}
+        egA={prediction.expectedGoalsA}
+        egB={prediction.expectedGoalsB}
+      />
+
+      {/* Top 3 比分 */}
+      <p className="mb-2 mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        最可能比分（Top 3）
+      </p>
+      <TopScores nameA={nameA} nameB={nameB} scores={prediction.topScores} />
+
+      {/* 可信度 */}
+      <div className="mt-6">
+        <ConfidenceBadge confidence={prediction.confidence} />
       </div>
 
-      {/* Probability bar */}
-      <div className="mb-2 flex h-7 w-full overflow-hidden rounded-full text-xs font-bold">
-        <div
-          className="flex items-center justify-center bg-sky-500/80"
-          style={{ width: `${winA}%` }}
-          title={`${nameA} win`}
-        >
-          {winA >= 8 ? `${winA}%` : ''}
-        </div>
-        <div
-          className="flex items-center justify-center bg-slate-500/80"
-          style={{ width: `${draw}%` }}
-          title="Draw"
-        >
-          {draw >= 8 ? `${draw}%` : ''}
-        </div>
-        <div
-          className="flex items-center justify-center bg-rose-500/80"
-          style={{ width: `${winB}%` }}
-          title={`${nameB} win`}
-        >
-          {winB >= 8 ? `${winB}%` : ''}
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div className="mb-6 flex justify-between text-sm">
-        <span className="flex items-center gap-1.5 text-sky-300">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-sky-500" />
-          {nameA} {winA}%
-        </span>
-        <span className="flex items-center gap-1.5 text-slate-300">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-500" />
-          Draw {draw}%
-        </span>
-        <span className="flex items-center gap-1.5 text-rose-300">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-rose-500" />
-          {nameB} {winB}%
-        </span>
-      </div>
-
-      {/* Explanation */}
+      {/* 预测分析 */}
+      <p className="mb-2 mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        预测分析
+      </p>
       <p className="rounded-xl bg-black/20 p-4 text-sm leading-relaxed text-slate-200">
-        {explanation}
+        {prediction.analysis}
       </p>
     </div>
   )
